@@ -29,3 +29,4 @@ C:\VSCode\tren\openGL\openGL\obj\Debug\net8.0\openGL.pdb
 C:\VSCode\tren\openGL\openGL\obj\Debug\net8.0\openGL.genruntimeconfig.cache
 C:\VSCode\tren\openGL\openGL\obj\Debug\net8.0\ref\openGL.dll
 C:\VSCode\tren\openGL\openGL\bin\Debug\net8.0\StbImageSharp.dll
+C:\VSCode\tren\openGL\openGL\obj\Debug\net8.0\openGL.sourcelink.json

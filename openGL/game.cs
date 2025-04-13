@@ -1,5 +1,4 @@
 ﻿
-using OpenTK.Audio.OpenAL;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
@@ -7,212 +6,253 @@ using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
 using StbImageSharp;
+using System.Drawing;
+
 
 namespace openGL
 {
-    public class Shader
+    internal class Game : GameWindow
     {
-        private int shader_handle;
+        private int width, height;
+        private List<Fish> fishes = new();
+        private RectangleF bounds; // Границы для физики
 
-        //public int Handle => shader_handle;
+        // Ресурсы для рендеринга рыб
+        private Shader fishShader = null!; // Инициализируется в OnLoad
+        private int fishTextureId = -1;
 
-        public void LoadShader(string vertexPath, string fragmentPath)
+        // Матрицы
+        private Matrix4 viewMatrix;
+        private Matrix4 projectionMatrix;
+
+        public Game(int width, int height) : base
+        (GameWindowSettings.Default, new NativeWindowSettings
         {
-            int vertex_shader = GL.CreateShader(ShaderType.VertexShader);
-            GL.ShaderSource(vertex_shader, LoadShaderSource(vertexPath));
-            GL.CompileShader(vertex_shader);
-            GL.GetShader(vertex_shader, ShaderParameter.CompileStatus, out int success1);
-            if (success1 == 0)
-            {
-                Console.WriteLine(GL.GetShaderInfoLog(vertex_shader));
-            }
-
-            int fragment_shader = GL.CreateShader(ShaderType.FragmentShader);
-            GL.ShaderSource(fragment_shader, LoadShaderSource(fragmentPath));
-            GL.CompileShader(fragment_shader);
-            GL.GetShader(fragment_shader, ShaderParameter.CompileStatus, out int success2);
-            if (success2 == 0)
-            {
-                Console.WriteLine(GL.GetShaderInfoLog(fragment_shader));
-            }
-
-            shader_handle = GL.CreateProgram();
-            GL.AttachShader(shader_handle, vertex_shader);
-            GL.AttachShader(shader_handle, fragment_shader);
-            GL.LinkProgram(shader_handle);
-
-            // Проверка линковки
-            GL.GetProgram(shader_handle, GetProgramParameterName.LinkStatus, out int linkSuccess);
-            if (linkSuccess == 0)
-            {
-                Console.WriteLine(GL.GetProgramInfoLog(shader_handle));
-            }
-
-            // Удаляем шейдеры после линковки
-            GL.DeleteShader(vertex_shader);
-            GL.DeleteShader(fragment_shader);
+            Size = new Vector2i(width, height), // Используем переданные размеры
+            API = ContextAPI.OpenGL,        // Можно оставить, OpenTK обычно определяет сам
+            Profile = ContextProfile.Core,  // !!! Запрашиваем Core профиль !!!
+            Flags = ContextFlags.ForwardCompatible, // Рекомендуется для Core профиля
+            APIVersion = new Version(3, 3)  // !!! Версия, соответствующая шейдерам (330) !!!
+        })
+        {
+            this.CenterWindow(new Vector2i(width, height)); // Центрируем окно
+            this.width = width; // Сохраняем начальные размеры
+            this.height = height;
+            // Инициализация bounds перенесена в OnResize, т.к. зависит от projectionMatrix
         }
 
-        public void Use()
+        private int LoadTextureFromFile(string path)
         {
-            GL.UseProgram(shader_handle);
-        }
+            int handle = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, handle);
 
-        public void Delete()
-        {
-            GL.DeleteProgram(shader_handle);
-        }
-
-        private static string LoadShaderSource(string filepath)
-        {
             try
             {
-                return File.ReadAllText("../../../Shaders/" + filepath);
+                StbImage.stbi_set_flip_vertically_on_load(1); // Раскомментируйте, если текстура перевернута
+
+                using (Stream stream = File.OpenRead(path))
+                {
+                    ImageResult image = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
+
+                    GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, image.Width, image.Height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, image.Data);
+                }
+
+                // Настройка параметров текстуры (фильтрация, повторение)
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat); // Или ClampToEdge
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat); // Или ClampToEdge
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear); // Для лучшего качества при уменьшении
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear); // При увеличении
+
+                GL.GenerateMipmap(GenerateMipmapTarget.Texture2D); // Генерация мипмапов
             }
             catch (Exception e)
             {
-                Console.WriteLine("Failed to load shader source file: " + e.Message);
-                return "";
+                Console.WriteLine($"Error loading texture {path}: {e.Message}");
+                GL.DeleteTexture(handle); // Удаляем текстуру, если загрузка не удалась
+                return -1;
             }
+
+            GL.BindTexture(TextureTarget.Texture2D, 0); // Отвязываем текстуру
+            return handle;
         }
-    }
-    internal class Game : GameWindow
-    {
-        int width, height;
-        public Game(int width, int height): base
-        (GameWindowSettings.Default,NativeWindowSettings.Default)
+        private Vector2 ScreenToWorld(Vector2 screenPos)
         {
-            this.CenterWindow(new Vector2i(width, height));
-            this.width = width;
-            this.height = height;
+            // Нормализуем экранные координаты (0,0 вверху слева -> 0..1)
+            float normX = screenPos.X / Size.X;
+            // Инвертируем Y, т.к. в OpenGL Y растет вверх, а в экранных координатах - вниз
+            float normY = 1.0f - screenPos.Y / Size.Y;
+
+            // Преобразуем в мировые координаты на основе текущей ортографической проекции
+            // Используем границы из bounds, которые соответствуют проекции
+            float worldX = bounds.Left + normX * bounds.Width;
+            float worldY = bounds.Top + normY * bounds.Height; // Используем Bottom и Height
+
+            return new Vector2(worldX, worldY);
         }
-        //вершины треугольника
-        /*float[] vertices = {
-            0f,0.5f,0f,
-            -0.5f,-0.5f,0f,
-            0.5f,-0.5f,0f
-        };*/
-        float[] vertices = {
-            // x,    y,   z
-            -0.5f,  0.5f, 0f,  // Top-left     (0)
-            0.5f, 0.5f, 0f,  // Bottom-left  (1)
-             0.5f, -0.5f, 0f,  // Bottom-right (2)
-             -0.5f,  -0.5f, 0f   // Top-right    (3)
-        };
-        uint[] indices =
-        {
-            0,1,2,
-            2,3,0
-        };
-        float[] texCoords =
-        {
-            0f,1f,
-            1f,1f,
-            1f,0f,
-            0f,0f
-        };
-        int VAO;
-        int VBO;
-        int EBO;//дескриптор квадрата
-        int TextureID;
-        int TextureVBO;
-        Shader shader_program;
 
         protected override void OnLoad()
         {
             base.OnLoad();
+            GL.ClearColor(Color4.CornflowerBlue);
 
-            // Генерация и настройка VAO
-            VAO = GL.GenVertexArray();
-            GL.BindVertexArray(VAO);
+            // Загрузка шейдера
+            fishShader = new Shader();
+            // --- Убедитесь, что путь к шейдерам правильный относительно исполняемого файла ---
+            // Возможно, стоит использовать абсолютный путь или копировать шейдеры в папку сборки
+            fishShader.LoadShader("shader.vert", "shader.frag");
+            if (fishShader.shader_handle <= 0) // Простая проверка, что шейдер слинковался
+            {
+                Console.WriteLine("Failed to load/link shader program.");
+                Close();
+                return;
+            }
 
-            // Генерация и настройка VBO (вершины)
-            VBO = GL.GenBuffer();
-            GL.BindBuffer(BufferTarget.ArrayBuffer, VBO);
-            GL.BufferData(BufferTarget.ArrayBuffer, vertices.Length * sizeof(float), vertices, BufferUsageHint.StaticDraw);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), 0);
-            GL.EnableVertexAttribArray(0);
+            // Загрузка текстуры
+            // --- Убедитесь, что путь к текстуре правильный ---
+            fishTextureId = LoadTextureFromFile("../../../Textures/15.png");
+            if (fishTextureId == -1)
+            {
+                Console.WriteLine("Failed to load fish texture.");
+                Close();
+                return;
+            }
 
-            // Генерация и настройка EBO
-            EBO = GL.GenBuffer();
-            GL.BindBuffer(BufferTarget.ElementArrayBuffer, EBO);
-            GL.BufferData(BufferTarget.ElementArrayBuffer, indices.Length * sizeof(uint), indices, BufferUsageHint.StaticDraw);
+            // Настройка матриц (вынесено в OnResize для инициализации и обновления)
+            // Вызываем OnResize вручную для первоначальной настройки проекции и bounds
+            OnResize(new ResizeEventArgs(Size)); // Используем текущий размер окна
 
-            // Генерация и настройка VBO (текстурные координаты)
-            TextureVBO = GL.GenBuffer();
-            GL.BindBuffer(BufferTarget.ArrayBuffer, TextureVBO);
-            GL.BufferData(BufferTarget.ArrayBuffer, texCoords.Length * sizeof(float), texCoords, BufferUsageHint.StaticDraw);
-            GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 2 * sizeof(float), 0);
-            GL.EnableVertexAttribArray(1);
+            // Инициализация графики для рыб с вашим шейдером и текстурой
+            try
+            {
+                Fish.InitializeGraphics(fishShader, fishTextureId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error initializing fish graphics: {ex.Message}");
+                Close();
+                return;
+            }
 
-            // Загрузка шейдеров
-            shader_program = new Shader();
-            shader_program.LoadShader("shader.vert", "shader.frag");
+            // Создание рыб
+            var rand = new Random();
+            fishes.Clear(); // Очищаем список на всякий случай (если OnLoad вызовется повторно)
+            for (int i = 0; i < 10; i++) // Или сколько рыб вы хотите
+            {
+                // Генерируем позицию в пределах bounds
+                // bounds задается в OnResize и должен быть актуален к этому моменту
+                float posX = (float)(rand.NextDouble() * bounds.Width + bounds.Left);
+                float posY = (float)(rand.NextDouble() * bounds.Height + bounds.Top); // Используем Bottom и Height для Y
+                var pos = new Vector2(posX, posY);
 
-            // Генерация и загрузка текстуры
-            TextureID = GL.GenTexture();
-            GL.BindTexture(TextureTarget.Texture2D, TextureID);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+                // Генерируем случайное начальное направление и скорость
+                var vel = new Vector2((float)(rand.NextDouble() - 0.5f), (float)(rand.NextDouble() - 0.5f));
+                vel.Normalize(); // Делаем вектор единичной длины
+                vel *= (float)(rand.NextDouble() * 0.3 + 0.1); // Задаем случайную скорость (от 0.1 до 0.4)
 
-            StbImage.stbi_set_flip_vertically_on_load(1);
-            ImageResult boxTexture = ImageResult.FromStream(File.OpenRead("../../../Textures/419.jpg"), ColorComponents.RedGreenBlueAlpha);
-            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, boxTexture.Width, boxTexture.Height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, boxTexture.Data);
-            GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+                var fish = new Fish(pos, vel) { Size = 0.15f };
+                fishes.Add(fish);
+            }
 
-            // Отключение привязок
-            GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
-            GL.BindVertexArray(0);
+            // Если текстура с прозрачностью, включить блендинг
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+            // Включение теста глубины не обязательно для 2D, но если будете добавлять 3D - раскомментируйте
+            // GL.Enable(EnableCap.DepthTest);
         }
+
+
 
 
         protected override void OnUnload()
         {
-            shader_program.Delete();
-            GL.DeleteBuffer(VBO);
-            GL.DeleteVertexArray(VAO);
-            GL.DeleteBuffer(EBO);
-            GL.DeleteTexture(TextureID);
+            // Освобождаем VAO/VBO/EBO рыб
+            Fish.CleanupGraphics();
+
+            // Удаляем шейдер
+            fishShader?.Delete(); // Используем безопасный вызов
+
+            // Удаляем текстуру
+            if (fishTextureId != -1)
+            {
+                GL.DeleteTexture(fishTextureId);
+                fishTextureId = -1; // Сбрасываем ID
+            }
+
             base.OnUnload();
         }
 
         protected override void OnRenderFrame(FrameEventArgs args)
         {
             base.OnRenderFrame(args);
+            // Очищаем цвет и глубину
+            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            GL.ClearColor(0.3f, 0.3f, 1f, 1f);
-            GL.Clear(ClearBufferMask.ColorBufferBit);
+            // Здесь можно обновлять viewMatrix, если камера движется
 
-            shader_program.Use();
+            // !!! Рисуем каждую рыбу, передавая матрицы !!!
+            foreach (var fish in fishes)
+            {
+                fish.Draw(viewMatrix, projectionMatrix);
+            }
 
-            GL.ActiveTexture(TextureUnit.Texture0);
-            GL.BindTexture(TextureTarget.Texture2D, TextureID);
-
-            GL.BindVertexArray(VAO);
-            GL.BindBuffer(BufferTarget.ElementArrayBuffer, EBO);
-            GL.DrawElements(PrimitiveType.Triangles, indices.Length, DrawElementsType.UnsignedInt, 0);
-
-            Context.SwapBuffers();
+            SwapBuffers();
         }
 
-
-        protected override void OnUpdateFrame(FrameEventArgs args)//также вызывается каждый кадр и обновляет окно, когда оно готово
+        protected override void OnUpdateFrame(FrameEventArgs args)
         {
-            base.OnUpdateFrame(args); 
+            base.OnUpdateFrame(args);
+
+            // Получаем текущее состояние мыши
+            MouseState mouseState = MouseState;
+            // Получаем позицию курсора в экранных координатах
+            Vector2 mouseScreenPos = mouseState.Position;
+            // Конвертируем в мировые координаты
+            Vector2 mouseWorldPos = ScreenToWorld(mouseScreenPos);
+
+            // Обновляем позицию и проверяем столкновения для каждой рыбы,
+            // передавая мировые координаты курсора
+            foreach (var fish in fishes)
+            {
+                fish.Update((float)args.Time, bounds, mouseWorldPos); // !!! Добавлен mouseWorldPos !!!
+            }
+
+            // Проверка нажатия Escape для выхода (пример)
             if (KeyboardState.IsKeyDown(Keys.Escape))
             {
                 Close();
             }
         }
-        protected override void OnResize(ResizeEventArgs e)//при изменении размеров окна сообщаем OpenGL, что мы изменили размеры
+
+        protected override void OnResize(ResizeEventArgs e)
         {
             base.OnResize(e);
+            if (e.Width == 0 || e.Height == 0) return; // Избегаем деления на ноль
+
             GL.Viewport(0, 0, e.Width, e.Height);
-            this.width = e.Width; 
+            this.width = e.Width;
             this.height = e.Height;
+
+            // Обновляем матрицу проекции для сохранения соотношения сторон
+            float aspectRatio = (float)e.Width / e.Height;
+            // Определяем желаемую высоту видимой области в мировых координатах
+            // Например, если хотим, чтобы по вертикали всегда было видно от -1 до 1
+            float orthoHeight = 1.0f;
+            float orthoWidth = orthoHeight * aspectRatio;
+
+            // Ортографическая проекция
+            projectionMatrix = Matrix4.CreateOrthographicOffCenter(-orthoWidth, orthoWidth, -orthoHeight, orthoHeight, 0.1f, 100.0f);
+
+            // Обновляем view матрицу (простая, смотрит прямо)
+            // Позиция камеры чуть дальше от плоскости XY, смотрит на начало координат
+            viewMatrix = Matrix4.LookAt(new Vector3(0, 0, 1), Vector3.Zero, Vector3.UnitY);
+
+            // Обновляем границы для физики рыб
+            // !!! Важно: System.Drawing.RectangleF(float x, float y, float width, float height)
+            // x, y - координаты ЛЕВОГО НИЖНЕГО угла (если Y растет вверх)
+            bounds = new RectangleF(-orthoWidth, -orthoHeight, orthoWidth * 2, orthoHeight * 2);
         }
 
     }
+
 }
