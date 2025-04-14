@@ -129,11 +129,13 @@ namespace openGL
 
             // Случайные повороты 
             // Поворачиваем вектор скорости, а не добавляем к нему
+            float coef = 1.0f;//коэффициент, масштабирующий диапазон поворота
             if (!bounced && s_random.NextDouble() < 0.02)
             {
-                float turnAngle = (float)(s_random.NextDouble() - 0.5) * 1.0f * deltaTime; // Маленький угол поворота
+                float turnAngle = (float)(s_random.NextDouble() - 0.5) * coef * deltaTime; // Маленький угол поворота в радианах
                 float cos = MathF.Cos(turnAngle);
                 float sin = MathF.Sin(turnAngle);
+                //вычисление повернутых компонент
                 float newX = Velocity.X * cos - Velocity.Y * sin;
                 float newY = Velocity.X * sin + Velocity.Y * cos;
                 Velocity = new Vector2(newX, newY);
