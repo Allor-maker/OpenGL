@@ -8,11 +8,11 @@ namespace openGL
     {
         public Vector2 Position;
         public Vector2 Velocity;
-        public float Size = 0.1f; // Вместо Radius, теперь это размер квадрата
-                                  // public float Rotation = 0f; // Можно добавить вращение, если нужно
+        public float Size = 0.1f; // размер квадрата
+                                  
 
-        private float normalSpeed; // Нормальная "крейсерская" скорость этой рыбы
-        // --- Статические ресурсы для отрисовки (общие для всех рыб) ---
+        private float normalSpeed; // Нормальная скорость этой рыбы
+        // общие для всех рыб поля
         private static int s_vao = -1;          // Vertex Array Object для квадрата
         private static int s_vbo = -1;          // Vertex Buffer Object для вершин/текстур
         private static int s_ebo = -1;          // Element Buffer Object для индексов
@@ -44,12 +44,12 @@ namespace openGL
             0, 1, 2, // Первый треугольник
             0, 2, 3  // Второй треугольник
         };
-        // --- Конец статических ресурсов ---
+
 
         // --- Добавляем константы для поведения убегания ---
-        private static readonly float FleeRadius = 0.4f;
-        private static readonly float FleeRadiusSq = FleeRadius * FleeRadius;
-        private static readonly float FleeStrength = 2.5f; // Сила "пинка"
+        private static readonly float FleeRadius = 0.4f; // рвдиус обнаружения курсора
+        private static readonly float FleeRadiusSq = FleeRadius * FleeRadius;//используем для вычисления растояния от Postion до курсора
+        private static readonly float FleeStrength = 2.5f; 
         private static readonly float MaxSpeed = 1.2f;     // Максимальная скорость при убегании
         private static readonly float MaxSpeedSq = MaxSpeed * MaxSpeed; // Не используется, но оставим для справки
         private static readonly float NormalSpeedMin = 0.2f;
@@ -60,58 +60,47 @@ namespace openGL
         public Fish(Vector2 position, Vector2 velocity)
         {
             Position = position;
-            normalSpeed = (float)(s_random.NextDouble() * (NormalSpeedMax - NormalSpeedMin) + NormalSpeedMin);
+            normalSpeed = (float)(s_random.NextDouble() * (NormalSpeedMax - NormalSpeedMin) + NormalSpeedMin);//выбираем случайную скорость для рыбки
 
-            if (velocity.LengthSquared > 0.001f)
+            if (velocity.LengthSquared > 0.001f)//скорость задана->используем ее вектор
             {
                 Velocity = velocity.Normalized() * normalSpeed;
             }
             else
-            {
+            {   
+                //генерируем случайный угол от 0 до 2Pi
                 float angle = (float)(s_random.NextDouble() * Math.PI * 2);
+                //создаем вектор скорости на основе этого угла и нормальной скорости
                 Velocity = new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * normalSpeed;
             }
         }
 
         public void Update(float deltaTime, RectangleF bounds, Vector2 cursorWorldPos)
         {
-            bool isFleeing = false;
+            bool isFleeing = false;//убегает?
             Vector2 fleeAcceleration = Vector2.Zero; // Ускорение от курсора
 
-            // 1. Проверяем, нужно ли убегать
-            Vector2 diff = Position - cursorWorldPos;
-            float distSq = diff.LengthSquared;
-            if (distSq < FleeRadiusSq && distSq > 0.0001f)
+            //Проверяем, нужно ли убегать
+            Vector2 diff = Position - cursorWorldPos;//вектор от курсора к рыбке
+            float distSq = diff.LengthSquared; //расстояние между position и курсором
+            if (distSq < FleeRadiusSq && distSq > 0.0001f)//убегаем
             {
                 isFleeing = true;
-                Vector2 fleeDirection = diff.Normalized();
-                // Рассчитываем ускорение (сила / масса, массу считаем = 1)
-                fleeAcceleration = fleeDirection * FleeStrength;
+                Vector2 fleeDirection = diff.Normalized();//нормализуем вектор, чтобы получить только направление
+                fleeAcceleration = fleeDirection * FleeStrength;//вектор ускорения как направление от курсора к рыбке, домноженное на силу
             }
 
-            // 2. Применяем ускорение от курсора (если есть)
-            Velocity += fleeAcceleration * deltaTime;
+            // Применяем ускорение от курсора (если есть)
+            Velocity += fleeAcceleration * deltaTime;//v= v0 +at
 
-            // 3. Определяем целевую скорость
+            // Определяем целевую скорость
             float targetSpeed = isFleeing ? MaxSpeed : normalSpeed;
 
-            // 4. Устанавливаем скорость равной целевой, сохраняя направление
+            // Устанавливаем скорость равной целевой, сохраняя направление
             //    (если текущая скорость не нулевая)
             if (Velocity.LengthSquared > 0.0001f) // Избегаем нормализации нулевого вектора
             {
-                // Если убегаем, но скорость еще не достигла MaxSpeed, она будет расти
-                // за счет fleeAcceleration. Если УЖЕ превысила MaxSpeed, ограничиваем.
-                if (isFleeing && Velocity.LengthSquared > targetSpeed * targetSpeed)
-                {
-                    Velocity = Velocity.Normalized() * targetSpeed; // Ограничиваем сверху
-                }
-                // Если НЕ убегаем, просто устанавливаем нормальную скорость
-                else if (!isFleeing)
-                {
-                    Velocity = Velocity.Normalized() * targetSpeed; // Устанавливаем normalSpeed
-                }
-                // Если убегаем, но скорость < MaxSpeed, позволяем fleeAcceleration ее увеличивать
-                // поэтому здесь ветки else нет.
+                Velocity = Velocity.Normalized() * targetSpeed; //устанавливаем вычисленную скорость
             }
             else if (!isFleeing) // Если скорость была нулевой и не убегаем
             {
@@ -122,7 +111,7 @@ namespace openGL
             }
 
 
-            // 5. Отскок от стенок
+            // Отскок от стенок
             bool bounced = false;
             float halfSize = Size / 2.0f;
             if (Position.X - halfSize < bounds.Left || Position.X + halfSize > bounds.Right)
@@ -138,7 +127,7 @@ namespace openGL
                 bounced = true;
             }
 
-            // 6. Случайные повороты (можно оставить, они делают движение живее)
+            // Случайные повороты 
             // Поворачиваем вектор скорости, а не добавляем к нему
             if (!bounced && s_random.NextDouble() < 0.02)
             {
@@ -165,10 +154,9 @@ namespace openGL
                 }
             }
 
-            // 7. Обновление позиции
+            // Обновление позиции
             Position += Velocity * deltaTime;
         }
-        // --- Статические методы для управления общими ресурсами ---
 
         // Принимает уже созданный шейдер и ID загруженной текстуры
         public static void InitializeGraphics(Shader fishShader, int fishTextureId)

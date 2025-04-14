@@ -48,7 +48,7 @@ namespace openGL
 
             try
             {
-                StbImage.stbi_set_flip_vertically_on_load(1); // Раскомментируйте, если текстура перевернута
+                StbImage.stbi_set_flip_vertically_on_load(1);
 
                 using (Stream stream = File.OpenRead(path))
                 {
@@ -85,7 +85,7 @@ namespace openGL
             // Преобразуем в мировые координаты на основе текущей ортографической проекции
             // Используем границы из bounds, которые соответствуют проекции
             float worldX = bounds.Left + normX * bounds.Width;
-            float worldY = bounds.Top + normY * bounds.Height; // Используем Bottom и Height
+            float worldY = bounds.Top + normY * bounds.Height; // Используем Top и Height
 
             return new Vector2(worldX, worldY);
         }
