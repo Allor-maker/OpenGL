@@ -43,7 +43,7 @@ namespace openGL
             }
 
             // Удаляем шейдеры после линковки
-            GL.DeleteShader(vertex_shader);
+            GL.DeleteShader(vertex_shader); 
             GL.DeleteShader(fragment_shader);
         }
 

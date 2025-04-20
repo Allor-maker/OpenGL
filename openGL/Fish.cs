@@ -1,283 +1,263 @@
-﻿using OpenTK.Graphics.OpenGL4; // Нужен для GL, VAO, VBO, EBO, Uniforms, Textures и т.д.
-using OpenTK.Mathematics;     // Нужен для Vector2, Vector3, Matrix4
-using System.Drawing;
+﻿using OpenTK.Graphics.OpenGL4;
+using OpenTK.Mathematics;
 
 namespace openGL
 {
     public class Fish
     {
-        public Vector2 Position;
-        public Vector2 Velocity;
-        public float Size = 0.1f; // размер квадрата
-                                  
+        public Vector3 Position; // 3D
+        public Vector3 Velocity; // 3D
+        public float Size = 0.05f;
 
-        private float normalSpeed; // Нормальная скорость этой рыбы
-        // общие для всех рыб поля
-        private static int s_vao = -1;          // Vertex Array Object для квадрата
-        private static int s_vbo = -1;          // Vertex Buffer Object для вершин/текстур
-        private static int s_ebo = -1;          // Element Buffer Object для индексов
-        private static Shader? s_shader = null; // Ссылка на ваш объект Shader
-        private static int s_textureId = -1;    // ID текстуры рыбы
-
-        // Локации Uniform-переменных
-        private static int s_modelLoc = -1;
-        private static int s_viewLoc = -1;
-        private static int s_projectionLoc = -1;
-        private static int s_texture0Loc = -1;
-
-        private static bool s_graphicsInitialized = false;
-
-        // Вершины квадрата: Позиция(x,y,z) + Текстурные Координаты(s,t)
-        // Центр квадрата в (0,0)
-        private static readonly float[] s_quadVertices =
-        {
-            // Позиция          Текстурные коорд.
-            -0.5f,  0.5f, 0.0f,  0.0f, 1.0f, // Верхний левый угол
-             0.5f,  0.5f, 0.0f,  1.0f, 1.0f, // Верхний правый угол
-             0.5f, -0.5f, 0.0f,  1.0f, 0.0f, // Нижний правый угол
-            -0.5f, -0.5f, 0.0f,  0.0f, 0.0f  // Нижний левый угол
-        };
-
-        // Индексы для отрисовки квадрата двумя треугольниками
-        private static readonly uint[] s_quadIndices =
-        {
-            0, 1, 2, // Первый треугольник
-            0, 2, 3  // Второй треугольник
-        };
-
-
-        // --- Добавляем константы для поведения убегания ---
-        private static readonly float FleeRadius = 0.4f; // рвдиус обнаружения курсора
-        private static readonly float FleeRadiusSq = FleeRadius * FleeRadius;//используем для вычисления растояния от Postion до курсора
-        private static readonly float FleeStrength = 2.5f; 
-        private static readonly float MaxSpeed = 1.2f;     // Максимальная скорость при убегании
-        private static readonly float MaxSpeedSq = MaxSpeed * MaxSpeed; // Не используется, но оставим для справки
+        // Параметры поведения (без изменений)
+        private static readonly float FleeRadius = 0.8f;
+        private static readonly float FleeRadiusSq = FleeRadius * FleeRadius;
+        private static readonly float FleeStrength = 2.5f;
+        private static readonly float MaxSpeed = 1.2f;
         private static readonly float NormalSpeedMin = 0.2f;
         private static readonly float NormalSpeedMax = 0.5f;
+        private float normalSpeed;
+
+        // Графические ресурсы (без изменений)
+        private static int s_vao = -1, s_vbo_pos = -1, s_vbo_tex = -1, s_vbo_norm = -1, s_ebo = -1;
+        private static int s_indexCount = 0;
+        private static Shader? s_shader = null;
+        private static int s_textureId = -1;
+        private static bool s_graphicsInitialized = false;
+        private static int s_modelLoc = -1, s_viewLoc = -1, s_projectionLoc = -1, s_texture0Loc = -1;
+        private static int s_lightPosLoc = -1, s_lightColorLoc = -1, s_viewPosLoc = -1;
 
         private static readonly Random s_random = new Random();
 
-        public Fish(Vector2 position, Vector2 velocity)
+        // Конструктор (без изменений)
+        public Fish(Vector3 position, Vector3 velocity)
         {
             Position = position;
-            normalSpeed = (float)(s_random.NextDouble() * (NormalSpeedMax - NormalSpeedMin) + NormalSpeedMin);//выбираем случайную скорость для рыбки
-
-            if (velocity.LengthSquared > 0.001f)//скорость задана->используем ее вектор
+            normalSpeed = (float)(s_random.NextDouble() * (NormalSpeedMax - NormalSpeedMin) + NormalSpeedMin);
+            if (velocity.LengthSquared > 0.001f)
             {
                 Velocity = velocity.Normalized() * normalSpeed;
             }
             else
-            {   
-                //генерируем случайный угол от 0 до 2Pi
-                float angle = (float)(s_random.NextDouble() * Math.PI * 2);
-                //создаем вектор скорости на основе этого угла и нормальной скорости
-                Velocity = new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * normalSpeed;
+            {
+                float theta = (float)(s_random.NextDouble() * Math.PI * 2);
+                float phi = MathF.Acos(1 - 2 * (float)s_random.NextDouble());
+                Velocity = new Vector3(
+                    MathF.Sin(phi) * MathF.Cos(theta),
+                    MathF.Sin(phi) * MathF.Sin(theta),
+                    MathF.Cos(phi)
+                ) * normalSpeed;
             }
         }
 
-        public void Update(float deltaTime, RectangleF bounds, Vector2 cursorWorldPos)
+        // --- Обновление физики и поведения с новыми границами ---
+        // Сигнатура метода изменена: принимает minBounds и maxBounds вместо BoundingBox
+        public void Update(float deltaTime, Vector3 minBounds, Vector3 maxBounds,
+                   bool scareModeActive, Vector3 rayOrigin, Vector3 rayDir)
         {
-            bool isFleeing = false;//убегает?
-            Vector2 fleeAcceleration = Vector2.Zero; // Ускорение от курсора
+            bool isFleeing = false;
+            Vector3 fleeAcceleration = Vector3.Zero;
 
-            //Проверяем, нужно ли убегать
-            Vector2 diff = Position - cursorWorldPos;//вектор от курсора к рыбке
-            float distSq = diff.LengthSquared; //расстояние между position и курсором
-            if (distSq < FleeRadiusSq && distSq > 0.0001f)//убегаем
+            if (scareModeActive && rayDir.LengthSquared > 0.0001f) // Убегаем только если режим активен и луч валидный
             {
-                isFleeing = true;
-                Vector2 fleeDirection = diff.Normalized();//нормализуем вектор, чтобы получить только направление
-                fleeAcceleration = fleeDirection * FleeStrength;//вектор ускорения как направление от курсора к рыбке, домноженное на силу
-            }
+                // Вычисляем ближайшую точку на луче к рыбе
+                Vector3 vectorToFish = Position - rayOrigin; // Вектор от начала луча к рыбе
+                float t = Vector3.Dot(vectorToFish, rayDir); // Проекция на направление луча
 
-            // Применяем ускорение от курсора (если есть)
-            Velocity += fleeAcceleration * deltaTime;//v= v0 +at
-
-            // Определяем целевую скорость
-            float targetSpeed = isFleeing ? MaxSpeed : normalSpeed;
-
-            // Устанавливаем скорость равной целевой, сохраняя направление
-            //    (если текущая скорость не нулевая)
-            if (Velocity.LengthSquared > 0.0001f) // Избегаем нормализации нулевого вектора
-            {
-                Velocity = Velocity.Normalized() * targetSpeed; //устанавливаем вычисленную скорость
-            }
-            else if (!isFleeing) // Если скорость была нулевой и не убегаем
-            {
-                // Можно задать случайное направление с нормальной скоростью,
-                // чтобы рыба не "застревала" если ее скорость обнулилась
-                float angle = (float)(s_random.NextDouble() * Math.PI * 2);
-                Velocity = new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * normalSpeed;
-            }
-
-
-            // Отскок от стенок
-            bool bounced = false;
-            float halfSize = Size / 2.0f;
-            if (Position.X - halfSize < bounds.Left || Position.X + halfSize > bounds.Right)
-            {
-                Velocity.X = -Velocity.X;
-                Position.X = Math.Clamp(Position.X, bounds.Left + halfSize + 0.001f, bounds.Right - halfSize - 0.001f);
-                bounced = true;
-            }
-            if (Position.Y - halfSize < bounds.Top || Position.Y + halfSize > bounds.Bottom)
-            {
-                Velocity.Y = -Velocity.Y;
-                Position.Y = Math.Clamp(Position.Y, bounds.Top + halfSize + 0.001f, bounds.Bottom - halfSize - 0.001f);
-                bounced = true;
-            }
-
-            // Случайные повороты 
-            // Поворачиваем вектор скорости, а не добавляем к нему
-            float coef = 1.0f;//коэффициент, масштабирующий диапазон поворота
-            if (!bounced && s_random.NextDouble() < 0.02)
-            {
-                float turnAngle = (float)(s_random.NextDouble() - 0.5) * coef * deltaTime; // Маленький угол поворота в радианах
-                float cos = MathF.Cos(turnAngle);
-                float sin = MathF.Sin(turnAngle);
-                //вычисление повернутых компонент
-                float newX = Velocity.X * cos - Velocity.Y * sin;
-                float newY = Velocity.X * sin + Velocity.Y * cos;
-                Velocity = new Vector2(newX, newY);
-
-                // После поворота скорость могла чуть измениться, вернем ее к целевой
-                if (Velocity.LengthSquared > 0.0001f)
+                Vector3 closestPointOnRay;
+                if (t < 0) // Ближайшая точка на ЛИНИИ находится позади камеры
                 {
-                    float speedAfterTurn = isFleeing ? MaxSpeed : normalSpeed;
-                    // Ограничиваем скорость только если убегаем И она превысила MaxSpeed
-                    if (isFleeing && Velocity.LengthSquared > speedAfterTurn * speedAfterTurn)
-                    {
-                        Velocity = Velocity.Normalized() * speedAfterTurn;
-                    }
-                    else if (!isFleeing) // Если не убегаем, всегда ставим normalSpeed
-                    {
-                        Velocity = Velocity.Normalized() * speedAfterTurn;
-                    }
+                    // Ближайшая точка на самом ЛУЧЕ - это его начало (позиция камеры)
+                    closestPointOnRay = rayOrigin;
+                }
+                else // Ближайшая точка на ЛИНИИ находится на луче
+                {
+                    closestPointOnRay = rayOrigin + rayDir * t;
+                }
+
+                // Вычисляем вектор и дистанцию от рыбы до этой ближайшей точки на луче
+                Vector3 diff = Position - closestPointOnRay;
+                float distSq = diff.LengthSquared;
+
+                // Проверяем, находится ли рыба в радиусе действия луча
+                if (distSq < FleeRadiusSq && distSq > 0.0001f)
+                {
+                    isFleeing = true;
+                    // Ускорение направлено ОТ ближайшей точки на луче К рыбе (вдоль diff)
+                    if (diff.LengthSquared > 0.0001f)
+                        fleeAcceleration = diff.Normalized() * FleeStrength;
                 }
             }
 
-            // Обновление позиции
+            // Ускорение и скорость (без изменений)
+            Velocity += fleeAcceleration * deltaTime;
+
+            float targetSpeed = isFleeing ? MaxSpeed : normalSpeed;
+            if (Velocity.LengthSquared > 0.0001f)
+            {
+                if (isFleeing && Velocity.LengthSquared > MaxSpeed * MaxSpeed)
+                    Velocity = Velocity.Normalized() * MaxSpeed;
+                else
+                    Velocity = Velocity.Normalized() * targetSpeed;
+            }
+            else if (!isFleeing)
+            {
+                float theta = (float)(s_random.NextDouble() * Math.PI * 2);
+                float phi = MathF.Acos(1 - 2 * (float)s_random.NextDouble());
+                Velocity = new Vector3(
+                    MathF.Sin(phi) * MathF.Cos(theta),
+                    MathF.Sin(phi) * MathF.Sin(theta),
+                    MathF.Cos(phi)
+                ) * normalSpeed;
+            }
+
+            // --- Отскок от стенок: используем minBounds и maxBounds ---
+            bool bounced = false;
+            if (Position.X < minBounds.X || Position.X > maxBounds.X) { Velocity.X = -Velocity.X; bounced = true; }
+            if (Position.Y < minBounds.Y || Position.Y > maxBounds.Y) { Velocity.Y = -Velocity.Y; bounced = true; }
+            if (Position.Z < minBounds.Z || Position.Z > maxBounds.Z) { Velocity.Z = -Velocity.Z; bounced = true; }
+            // --- Конец отскока ---
+
+            // --- "Заталкиваем" рыбу обратно: используем minBounds и maxBounds ---
+            // (Важно! Добавил проверку, чтобы рыба не застряла, если случайно Velocity станет 0 на границе)
+            if (Position.X <= minBounds.X && Velocity.X < 0) Position.X = minBounds.X + 0.001f;
+            if (Position.X >= maxBounds.X && Velocity.X > 0) Position.X = maxBounds.X - 0.001f;
+            if (Position.Y <= minBounds.Y && Velocity.Y < 0) Position.Y = minBounds.Y + 0.001f;
+            if (Position.Y >= maxBounds.Y && Velocity.Y > 0) Position.Y = maxBounds.Y - 0.001f;
+            if (Position.Z <= minBounds.Z && Velocity.Z < 0) Position.Z = minBounds.Z + 0.001f;
+            if (Position.Z >= maxBounds.Z && Velocity.Z > 0) Position.Z = maxBounds.Z - 0.001f;
+            // Старый вариант с ComponentMax/Min тоже рабочий, но этот чуть надежнее от застревания:
+            // Position = Vector3.ComponentMax(minBounds + new Vector3(0.01f), Position);
+            // Position = Vector3.ComponentMin(maxBounds - new Vector3(0.01f), Position);
+            // --- Конец заталкивания ---
+
+
+            // Случайные повороты (без изменений)
+            float turnStrength = 0.5f;
+            if (!bounced && s_random.NextDouble() < 0.05)
+            {
+                Vector3 randomDir = new Vector3(
+                    (float)s_random.NextDouble() - 0.5f,
+                    (float)s_random.NextDouble() - 0.5f,
+                    (float)s_random.NextDouble() - 0.5f);
+                if (randomDir.LengthSquared > 0.001f)
+                {
+                    Velocity += randomDir.Normalized() * turnStrength * deltaTime;
+                    if (Velocity.LengthSquared > 0.0001f)
+                        Velocity = Velocity.Normalized() * targetSpeed;
+                }
+            }
+
+            // Обновление позиции (без изменений)
             Position += Velocity * deltaTime;
         }
 
-        // Принимает уже созданный шейдер и ID загруженной текстуры
-        public static void InitializeGraphics(Shader fishShader, int fishTextureId)
+        // Инициализация графики (без изменений)
+        public static void InitializeGraphics(Shader fishShader, int fishTextureId, string modelPath)
         {
             if (s_graphicsInitialized) return;
             if (fishShader == null) throw new ArgumentNullException(nameof(fishShader));
-            if (fishTextureId < 0) throw new ArgumentException("Invalid texture ID provided.", nameof(fishTextureId));
+            if (fishTextureId < 0) throw new ArgumentException("Invalid texture ID.", nameof(fishTextureId));
+            if (string.IsNullOrEmpty(modelPath)) throw new ArgumentNullException(nameof(modelPath));
 
             s_shader = fishShader;
             s_textureId = fishTextureId;
 
-            // 1. Создание VAO, VBO, EBO для квадрата
-            s_vao = GL.GenVertexArray();
-            s_vbo = GL.GenBuffer();
-            s_ebo = GL.GenBuffer();
+            if (!ObjLoader.LoadObj(modelPath, out var vertices, out var indices))
+            { Console.WriteLine($"Failed to load model {modelPath}"); return; }
+            if (vertices.Count == 0 || indices.Count == 0)
+            { Console.WriteLine($"Model {modelPath} loaded empty."); return; }
 
+            s_indexCount = indices.Count;
+            List<Vector3> positions = vertices.Select(v => v.Position).ToList();
+            List<Vector2> texCoords = vertices.Select(v => v.TexCoord).ToList();
+            List<Vector3> normals = vertices.Select(v => v.Normal).ToList();
+
+            s_vao = GL.GenVertexArray();
+            s_vbo_pos = GL.GenBuffer(); s_vbo_tex = GL.GenBuffer(); s_vbo_norm = GL.GenBuffer();
+            s_ebo = GL.GenBuffer();
             GL.BindVertexArray(s_vao);
 
-            // Загрузка данных вершин в VBO
-            GL.BindBuffer(BufferTarget.ArrayBuffer, s_vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, s_quadVertices.Length * sizeof(float), s_quadVertices, BufferUsageHint.StaticDraw);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, s_vbo_pos);
+            GL.BufferData(BufferTarget.ArrayBuffer, positions.Count * Vector3.SizeInBytes, positions.ToArray(), BufferUsageHint.StaticDraw);
+            GL.EnableVertexAttribArray(0); GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 0, 0);
 
-            // Загрузка данных индексов в EBO
+            GL.BindBuffer(BufferTarget.ArrayBuffer, s_vbo_tex);
+            GL.BufferData(BufferTarget.ArrayBuffer, texCoords.Count * Vector2.SizeInBytes, texCoords.ToArray(), BufferUsageHint.StaticDraw);
+            GL.EnableVertexAttribArray(1); GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 0, 0);
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, s_vbo_norm);
+            GL.BufferData(BufferTarget.ArrayBuffer, normals.Count * Vector3.SizeInBytes, normals.ToArray(), BufferUsageHint.StaticDraw);
+            GL.EnableVertexAttribArray(2); GL.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, false, 0, 0);
+
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, s_ebo);
-            GL.BufferData(BufferTarget.ElementArrayBuffer, s_quadIndices.Length * sizeof(uint), s_quadIndices, BufferUsageHint.StaticDraw);
+            GL.BufferData(BufferTarget.ElementArrayBuffer, indices.Count * sizeof(uint), indices.ToArray(), BufferUsageHint.StaticDraw);
 
-            // 2. Настройка атрибутов вершин (согласно вашему вершинному шейдеру)
-            int stride = 5 * sizeof(float); // 3 float для позиции + 2 float для текстурных коорд.
-
-            // layout (location = 0) in vec3 aPosition;
-            GL.EnableVertexAttribArray(0);
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, stride, 0); // 3 компонента, смещение 0
-
-            // layout (location = 1) in vec2 aTexCoord;
-            GL.EnableVertexAttribArray(1);
-            GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, stride, 3 * sizeof(float)); // 2 компонента, смещение 3*float
-
-            // 3. Получение локаций uniform-переменных из ВАШЕГО шейдера
             s_modelLoc = GL.GetUniformLocation(s_shader.shader_handle, "model");
             s_viewLoc = GL.GetUniformLocation(s_shader.shader_handle, "view");
             s_projectionLoc = GL.GetUniformLocation(s_shader.shader_handle, "projection");
             s_texture0Loc = GL.GetUniformLocation(s_shader.shader_handle, "texture0");
+            s_lightPosLoc = GL.GetUniformLocation(s_shader.shader_handle, "lightPos");
+            s_lightColorLoc = GL.GetUniformLocation(s_shader.shader_handle, "lightColor");
+            s_viewPosLoc = GL.GetUniformLocation(s_shader.shader_handle, "viewPos");
 
-            if (s_modelLoc == -1 || s_viewLoc == -1 || s_projectionLoc == -1 || s_texture0Loc == -1)
-            {
-                Console.WriteLine("Warning: Could not find one or more uniform locations in the fish shader.");
-                // Можно добавить более строгую проверку или выбросить исключение
-            }
+            if (s_modelLoc == -1 || s_viewLoc == -1 || s_projectionLoc == -1 || s_texture0Loc == -1 ||
+                s_lightPosLoc == -1 || s_lightColorLoc == -1 || s_viewPosLoc == -1)
+            { Console.WriteLine("Warning: Missing uniform locations."); }
 
-            // Отвязываем VAO (VBO и EBO остаются связанными с VAO)
             GL.BindVertexArray(0);
-            // Отвязывать ArrayBuffer и ElementArrayBuffer после отвязки VAO необязательно, но можно для чистоты
             GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, 0);
-
-
             s_graphicsInitialized = true;
-            Console.WriteLine("Fish graphics initialized successfully using provided shader.");
+            Console.WriteLine("Fish graphics initialized successfully with 3D model.");
         }
 
+        // Очистка графики (без изменений)
         public static void CleanupGraphics()
         {
             if (!s_graphicsInitialized) return;
-
-            GL.DeleteBuffer(s_vbo);
-            GL.DeleteBuffer(s_ebo);
-            GL.DeleteVertexArray(s_vao);
-
-            s_vbo = -1;
-            s_ebo = -1;
-            s_vao = -1;
-            s_shader = null; // Обнуляем ссылку, но не удаляем сам шейдер здесь
-            s_textureId = -1;
+            GL.DeleteBuffer(s_vbo_pos); GL.DeleteBuffer(s_vbo_tex); GL.DeleteBuffer(s_vbo_norm);
+            GL.DeleteBuffer(s_ebo); GL.DeleteVertexArray(s_vao);
+            s_vbo_pos = s_vbo_tex = s_vbo_norm = s_ebo = s_vao = -1;
+            s_shader = null; s_textureId = -1; s_indexCount = 0;
             s_graphicsInitialized = false;
             Console.WriteLine("Fish graphics cleaned up.");
         }
 
-        // --- Метод отрисовки экземпляра рыбы ---
-        // Принимает матрицы вида и проекции
-        public void Draw(Matrix4 view, Matrix4 projection)
+        // Отрисовка (без изменений)
+        public void Draw(Matrix4 view, Matrix4 projection, Vector3 lightPos, Vector3 lightColor, Vector3 viewPos)
         {
-            if (!s_graphicsInitialized || s_shader == null)
-            {
-                Console.WriteLine("Error: Fish graphics not initialized or shader missing.");
-                return;
-            }
+            // Проверки оставляем
+            if (!s_graphicsInitialized || s_shader == null || s_indexCount == 0) return;
 
-            // 1. Вычисляем Model матрицу для этой рыбы
+            // 1. Вычисляем Model матрицу (как и было)
             Matrix4 model = Matrix4.Identity;
-            model *= Matrix4.CreateScale(Size); // Масштабируем квадрат до нужного размера
-            // model *= Matrix4.CreateRotationZ(Rotation); // Если нужно вращение
-            model *= Matrix4.CreateTranslation(Position.X, Position.Y, 0.0f); // Перемещаем в позицию рыбы
+            model *= Matrix4.CreateScale(Size);
+            if (Velocity.LengthSquared > 0.0001f)
+            {
+                Vector3 targetDir = Velocity.Normalized();
+                Vector3 rotAxis = Vector3.Cross(Vector3.UnitZ, targetDir);
+                float angle = MathF.Acos(Vector3.Dot(Vector3.UnitZ, targetDir));
+                if (rotAxis.LengthSquared > 0.0001f)
+                    model *= Matrix4.CreateFromAxisAngle(rotAxis.Normalized(), angle);
+                else if (targetDir.Z < 0)
+                    model *= Matrix4.CreateRotationY(MathHelper.Pi);
+            }
+            model *= Matrix4.CreateTranslation(Position);
 
-            // 2. Активируем текстурный юнит 0 и привязываем текстуру рыбы
-            GL.ActiveTexture(TextureUnit.Texture0);
-            GL.BindTexture(TextureTarget.Texture2D, s_textureId);
+            // 2. Устанавливаем ТОЛЬКО model матрицу (view/proj/light/viewPos устанавливаются в Game.OnRenderFrame)
+            // Локации s_modelLoc и т.д. должны быть получены заранее в InitializeGraphics
+            if (s_modelLoc != -1) GL.UniformMatrix4(s_modelLoc, false, ref model);
+            // Остальные uniforms (view, proj, light, viewPos, texture0) устанавливаются снаружи
 
-            // 3. Используем шейдерную программу
-            s_shader.Use(); // Используем ваш метод Use()
-
-            // 4. Устанавливаем значения uniform-переменных
-            GL.UniformMatrix4(s_modelLoc, false, ref model);
-            GL.UniformMatrix4(s_viewLoc, false, ref view);
-            GL.UniformMatrix4(s_projectionLoc, false, ref projection);
-            GL.Uniform1(s_texture0Loc, 0); // Сообщаем шейдеру использовать текстурный юнит 0 для texture0
-
-            // 5. Привязываем VAO (он помнит VBO, EBO и настройки атрибутов)
+            // 3. Привязываем VAO рыбы
             GL.BindVertexArray(s_vao);
 
-            // 6. Рисуем квадрат, используя индексы из EBO
-            GL.DrawElements(PrimitiveType.Triangles, s_quadIndices.Length, DrawElementsType.UnsignedInt, 0);
+            // 4. Рисуем модель рыбы
+            GL.DrawElements(PrimitiveType.Triangles, s_indexCount, DrawElementsType.UnsignedInt, 0);
 
-            // 7. Отвязываем VAO (хорошая практика)
+            // 5. Отвязываем VAO рыбы
             GL.BindVertexArray(0);
-
-            // 8. Отвязываем шейдер и текстуру (опционально, но может помочь избежать конфликтов)
-            GL.UseProgram(0);
-            GL.BindTexture(TextureTarget.Texture2D, 0);
         }
     }
-
 }
